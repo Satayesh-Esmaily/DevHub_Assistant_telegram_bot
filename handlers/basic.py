@@ -4,6 +4,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 import github_api as gh
 import storage
+from config import ADMIN_ID
 
 HELP_TEXT = (
     "<b>DevHub Assistant commands</b>\n\n"
@@ -44,6 +45,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML)
+
+
+async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
+        await update.effective_message.reply_text("This command is for the bot administrator only.")
+        return
+
+    count, rows = storage.get_bot_users()
+    lines = [f"<b>Total users: {count}</b>"]
+    for telegram_id, username, first_name, last_name in rows:
+        name = " ".join(part for part in (first_name, last_name) if part) or "-"
+        handle = f"@{username}" if username else "no username"
+        lines.append(f"<code>{telegram_id}</code> — {esc(name)} ({esc(handle)})")
+
+    # Keep each Telegram message below its limit without splitting HTML tags.
+    chunk = lines[0]
+    for line in lines[1:]:
+        if len(chunk) + len(line) + 1 > 3900:
+            await update.effective_message.reply_text(chunk, parse_mode=ParseMode.HTML)
+            chunk = line
+        else:
+            chunk += "\n" + line
+    await update.effective_message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
 def _token_for(update):
