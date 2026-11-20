@@ -19,6 +19,41 @@ def init_db():
                 token_enc BLOB NOT NULL
             )"""
         )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS bot_users (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+
+def track_user(user):
+    """Record a Telegram user without requiring them to connect GitHub."""
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO bot_users (telegram_id, username, first_name, last_name)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(telegram_id) DO UPDATE SET
+                   username = excluded.username,
+                   first_name = excluded.first_name,
+                   last_name = excluded.last_name,
+                   last_seen = CURRENT_TIMESTAMP""",
+            (user.id, user.username, user.first_name, user.last_name),
+        )
+
+
+def get_bot_users():
+    with _conn() as c:
+        count = c.execute("SELECT COUNT(*) FROM bot_users").fetchone()[0]
+        rows = c.execute(
+            "SELECT telegram_id, username, first_name, last_name "
+            "FROM bot_users ORDER BY first_seen"
+        ).fetchall()
+    return count, rows
 
 
 def save_token(telegram_id: int, github_login: str, token: str):
