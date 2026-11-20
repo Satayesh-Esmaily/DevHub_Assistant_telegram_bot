@@ -1,5 +1,5 @@
 import logging
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 from config import BOT_TOKEN
 import storage
 from handlers import basic, auth_write
@@ -13,9 +13,17 @@ def main():
     storage.init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    async def track_users(update, context):
+        if update.effective_user:
+            storage.track_user(update.effective_user)
+
+    # Record users across all messages, including those who never connect GitHub.
+    app.add_handler(MessageHandler(filters.ALL, track_users), group=-1)
+
     # Step 1: read-only
     app.add_handler(CommandHandler("start", basic.start))
     app.add_handler(CommandHandler("help", basic.help_cmd))
+    app.add_handler(CommandHandler("users", basic.users))
     app.add_handler(CommandHandler("user", basic.user))
     app.add_handler(CommandHandler("repo", basic.repo))
     app.add_handler(CommandHandler("search", basic.search))
