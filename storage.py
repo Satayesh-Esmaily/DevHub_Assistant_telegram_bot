@@ -86,3 +86,85 @@ def get_login(telegram_id: int):
 def delete_user(telegram_id: int):
     with _conn() as c:
         c.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+def init_db():
+    with _conn() as c:
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS users (
+                telegram_id INTEGER PRIMARY KEY,
+                github_login TEXT,
+                token_enc BLOB NOT NULL
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS watches (
+                chat_id INTEGER,
+                repo TEXT,
+                hook_id INTEGER,
+                PRIMARY KEY (chat_id, repo)
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS digest_subs (
+                telegram_id INTEGER PRIMARY KEY
+            )"""
+        )
+
+
+# ---------- watches ----------
+
+def add_watch(chat_id: int, repo: str, hook_id: int):
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO watches (chat_id, repo, hook_id) VALUES (?, ?, ?)",
+            (chat_id, repo.lower(), hook_id),
+        )
+
+
+def get_watch(chat_id: int, repo: str):
+    with _conn() as c:
+        row = c.execute(
+            "SELECT hook_id FROM watches WHERE chat_id = ? AND repo = ?",
+            (chat_id, repo.lower()),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def remove_watch(chat_id: int, repo: str):
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM watches WHERE chat_id = ? AND repo = ?", (chat_id, repo.lower())
+        )
+
+
+def list_watches(chat_id: int):
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT repo FROM watches WHERE chat_id = ?", (chat_id,)
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+# ---------- digest ----------
+
+def set_digest(telegram_id: int, on: bool):
+    with _conn() as c:
+        if on:
+            c.execute("INSERT OR IGNORE INTO digest_subs (telegram_id) VALUES (?)", (telegram_id,))
+        else:
+            c.execute("DELETE FROM digest_subs WHERE telegram_id = ?", (telegram_id,))
+
+
+def is_digest_on(telegram_id: int) -> bool:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM digest_subs WHERE telegram_id = ?", (telegram_id,)
+        ).fetchone()
+    return bool(row)
+
+
+def list_digest_subs():
+    with _conn() as c:
+        rows = c.execute("SELECT telegram_id FROM digest_subs").fetchall()
+    return [r[0] for r in rows]
