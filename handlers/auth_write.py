@@ -17,7 +17,8 @@ from handlers.basic import esc
 
 DEVICE_URL = "https://github.com/login/device/code"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
-SCOPES = "public_repo gist"  # for private repos use "repo gist"
+SCOPES = "public_repo gist admin:repo_hook notifications"
+# for private repos use: "repo gist admin:repo_hook notifications"
 
 
 # ---------- LOGIN (Device Flow) ----------
