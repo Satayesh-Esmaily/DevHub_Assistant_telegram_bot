@@ -7,7 +7,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 import storage
 import webhook_server
 from config import BOT_TOKEN, PORT, DIGEST_HOUR_UTC
-from handlers import basic, auth_write, watch
+from handlers import basic, auth_write, watch, card
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -67,6 +68,9 @@ def main():
         watch.send_daily_digests,
         time=dt.time(hour=DIGEST_HOUR_UTC, minute=0, tzinfo=dt.timezone.utc),
     )
+
+        # Step 5: stats card
+    app.add_handler(CommandHandler("card", card.card))
 
     app.run_polling()
 
