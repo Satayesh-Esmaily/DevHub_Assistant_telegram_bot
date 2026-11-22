@@ -8,8 +8,7 @@ import storage
 import webhook_server
 from config import BOT_TOKEN, PORT, DIGEST_HOUR_UTC
 from handlers import basic, auth_write, watch, card
-
-
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -71,6 +70,7 @@ def main():
 
         # Step 5: stats card
     app.add_handler(CommandHandler("card", card.card))
+    app.add_handler(CallbackQueryHandler(card.theme_callback, pattern=r"^cp:"))
 
     app.run_polling()
 
