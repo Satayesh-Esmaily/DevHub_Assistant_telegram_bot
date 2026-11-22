@@ -4,7 +4,7 @@ import time
 from collections import Counter
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -23,15 +23,9 @@ CLICK_COOLDOWN = 2    # seconds between theme button presses per user
 _data_cache: dict = {}   # login -> (time, data, avatar_bytes)
 _png_cache: dict = {}    # (login, theme) -> (time, png)
 
+PENDING_TTL = 180     # seconds the bot waits for the username after /card
+
 THEME_LIST = ", ".join(THEMES[t]["name"] for t in THEME_ORDER)
-USAGE = (
-    "Usage:\n"
-    "/card <username>  → pick a theme, then I draw the card\n"
-    "/card <username> <theme>  → skip the picker, e.g. /card torvalds ocean\n"
-    "/card me <theme>  → your own card (after /login)\n"
-    "Add 'file' for the full quality PNG: /card torvalds ocean file\n\n"
-    f"Themes: {THEME_LIST}"
-)
 
 
 # ---------- data ----------
@@ -152,25 +146,13 @@ def _caption(login: str, theme: str) -> str:
 
 
 # ---------- /card ----------
+#
+# Step 1: ask for the username   (nothing about themes yet)
+# Step 2: choose a theme         (preview image + buttons)
+# Then the card is drawn.        Buttons stay, so another theme is one tap away.
 
 async def card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    token = storage.get_token(uid)
     login, theme, bad_theme, as_file = _parse_args(context.args)
-
-    if bad_theme:
-        await update.message.reply_text(f"I don't know the theme '{bad_theme}'.\nThemes: {THEME_LIST}")
-        return
-
-    if login is None or login.lower() == "me":
-        if not token:
-            await update.message.reply_text(USAGE if login is None else "Please /login first.")
-            return
-        login = storage.get_login(uid)
-
-    if not USER_RE.match(login):
-        await update.message.reply_text("That doesn't look like a valid GitHub username.")
-        return
 
     now = time.time()
     if now - context.user_data.get("last_card", 0) < COOLDOWN:
@@ -178,10 +160,84 @@ async def card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.user_data["last_card"] = now
 
+    if bad_theme:
+        await update.message.reply_text(f"I don't know the theme '{bad_theme}'.\nThemes: {THEME_LIST}")
+        return
+
+    if login is None:  # step 1
+        private = update.effective_chat.type == "private"
+        prompt = await update.message.reply_text(
+            "👤 Send the GitHub username you want a card for.\n/cancel to stop."
+            + ("" if private else "\nIn groups, reply to this message."),
+            reply_markup=ForceReply(input_field_placeholder="username") if private else None,
+        )
+        context.user_data["await_card_user"] = {
+            "chat_id": update.effective_chat.id, "msg_id": prompt.message_id, "t": now,
+        }
+        return
+
+    context.user_data.pop("await_card_user", None)
+    await _begin(update, context, login, theme, as_file)
+
+
+async def username_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The message that answers step 1."""
+    p = context.user_data.get("await_card_user")
+    if not p or update.effective_chat.id != p["chat_id"]:
+        return
+    if time.time() - p["t"] > PENDING_TTL:
+        context.user_data.pop("await_card_user", None)
+        return
+    if update.effective_chat.type != "private":
+        reply = update.message.reply_to_message
+        if not reply or reply.message_id != p["msg_id"]:
+            return
+
+    keep_waiting = await _begin(update, context, update.message.text.strip().lstrip("@"), None, False)
+    if keep_waiting:
+        p["t"] = time.time()  # typo? let them try again without retyping /card
+    else:
+        context.user_data.pop("await_card_user", None)
+
+
+async def cancel_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("await_card_user", None):
+        await update.message.reply_text("Cancelled.")
+
+
+async def _begin(update, context, login, theme, as_file) -> bool:
+    """Checks the username, then shows the theme picker (or draws if a theme was given).
+    Returns True if the bot should keep waiting for another username."""
+    uid = update.effective_user.id
+    token = storage.get_token(uid)
+
+    if login.lower() == "me":
+        if not token:
+            await update.message.reply_text("Please /login first, or send a GitHub username.")
+            return True
+        login = storage.get_login(uid)
+
+    if not USER_RE.match(login):
+        await update.message.reply_text(
+            "That doesn't look like a valid GitHub username. Send another one, or /cancel."
+        )
+        return True
+
+    await update.effective_chat.send_action(ChatAction.UPLOAD_PHOTO)
+
+    # Look the user up now: a wrong name is caught before any choice is made,
+    # and the data is cached so the final card appears instantly.
+    data, avatar, err = await _get_data(login, token)
+    if err == "not_found":
+        await update.message.reply_text("User not found. Send another username, or /cancel.")
+        return True
+    if err:
+        await update.message.reply_text(_err_text(err))
+        return False
+    login = data["login"]
     mode = "f" if as_file else "p"
 
-    # No theme given: show the picker (a preview of all six themes + buttons)
-    if theme is None:
+    if theme is None:  # step 2
         preview = context.bot_data.get("theme_preview_id")
         if not preview:
             preview = await asyncio.to_thread(render_theme_preview)
@@ -192,14 +248,12 @@ async def card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if sent.photo:
             context.bot_data["theme_preview_id"] = sent.photo[-1].file_id  # reuse, don't re-upload
-        return
+        return False
 
-    # Theme given: draw straight away
-    await update.effective_chat.send_action(ChatAction.UPLOAD_PHOTO)
     png, err = await _make_png(login, theme, token)
     if err:
         await update.message.reply_text(_err_text(err))
-        return
+        return False
     if as_file:
         await update.message.reply_document(
             document=png, filename=f"{login}-github-card.png", caption=_caption(login, theme)
@@ -208,6 +262,7 @@ async def card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(
             photo=png, caption=_caption(login, theme), reply_markup=_theme_kb(login, mode, theme)
         )
+    return False
 
 
 # ---------- theme button pressed ----------
